@@ -1,0 +1,9 @@
+# requirements.txt
+fastapi
+uvicorn[standard]
+pandas
+numpy
+scikit-learn
+lightgbm
+pytest
+httpx

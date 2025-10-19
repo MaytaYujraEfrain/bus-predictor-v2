@@ -1,0 +1,39 @@
+ - name: Configurar Python 3.10
+    uses: actions/setup-python@v4
+    with:
+      python-version: '3.10'
+
+  - name: Instalar dependencias
+    # Asegúrate de que este step instale lightgbm, pandas, scikit-learn, etc.
+    run: pip install -r requirements.txt
+
+  - name: Ejecutar Script de Re-entrenamiento
+    # Este script (scripts/retrain.py) entrena, evalúa y actualiza los archivos .pkl si hay mejora
+    run: python scripts/retrain.py
+    
+  # -----------------------------------------------------------
+  # Subir los nuevos artefactos (si el modelo mejoró y se actualizó)
+  # -----------------------------------------------------------
+  - name: Verificar si hay artefactos nuevos
+    id: git_status
+    run: echo "status=$(git status --porcelain)" >> $GITHUB_OUTPUT
+    
+  - name: Commitear nuevos artefactos
+    if: steps.git_status.outputs.status != ''
+    run: |
+      git config user.name 'github-actions[bot]'
+      git config user.email 'github-actions[bot]@users.noreply.github.com'
+      git add models/lgbm_regressor.pkl models/encoders.pkl
+      git commit -m "chore(mlops): Modelo re-entrenado y promovido debido a mejora en el rendimiento."
+      
+  - name: Push de los nuevos artefactos (Dispara CI/CD)
+    if: steps.git_status.outputs.status != ''
+    run: git push
+    
+  - name: Notificación de CM
+    run: |
+      if [ -z "${{ steps.git_status.outputs.status }}" ]; then
+        echo "::notice::El re-entrenamiento terminó. El modelo NO mejoró, la versión actual se mantiene en producción."
+      else
+        echo "::notice::¡MODELO PROMOVIDO! Los nuevos artefactos fueron subidos a 'main', disparando el flujo CI/CD para un nuevo despliegue en producción."
+      fi

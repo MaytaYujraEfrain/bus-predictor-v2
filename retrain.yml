@@ -1,0 +1,64 @@
+.github/workflows/retrain.yml
+
+Simula el Mantenimiento Continuo (Re-entrenamiento programado)
+
+name: ⚙️ Mantenimiento Continuo (CM) - Re-entrenamiento Mensual
+
+on:
+
+Disparador principal: Ejecución programada (cron)
+
+Ejecuta el día 1 de cada mes a las 00:00 UTC (ajusta según tu necesidad)
+
+schedule:
+- cron: '0 0 1 * *'
+
+Permite la ejecución manual desde la interfaz de GitHub
+
+workflow_dispatch:
+
+jobs:
+retrain_and_validate:
+runs-on: ubuntu-latest
+
+steps:
+- name: 1. Obtener Repositorio
+  uses: actions/checkout@v4
+
+- name: 2. Configurar Python 3.10
+  uses: actions/setup-python@v5
+  with:
+    python-version: '3.10'
+
+- name: 3. Instalar Dependencias (Incluyendo LightGBM)
+  run: |
+    pip install --upgrade pip
+    pip install -r requirements.txt
+    pip install scikit-learn pandas
+
+- name: 4. Crear Estructura de Carpetas (Necesario para el script)
+  run: |
+    mkdir -p data
+    mkdir -p models
+    # En un escenario real, aquí se descargaría el último dataset
+    # Por ahora, copiamos el archivo base para la simulación:
+    cp MTA_Bus_Metrics_2024.csv data/MTA_Bus_Metrics_2024.csv
+    
+# Paso CLAVE: Ejecuta el script que entrena y valida.
+- name: 5. Ejecutar Script de Re-entrenamiento y Validación
+  # El script guardará el modelo solo si es mejor.
+  run: python scripts/retrain.py
+
+# 6. Si se promocionó un nuevo modelo (los archivos .pkl han cambiado),
+# disparamos el pipeline de CI/CD para desplegar la nueva versión.
+- name: 6. Despliegue de Nuevo Modelo a Producción (CI/CD)
+  if: success() 
+  run: |
+    # Esto simularía la subida de los nuevos artefactos.
+    # En un entorno real, aquí se llamaría al workflow de despliegue.
+    echo "🚨 Se detectó un nuevo modelo. Disparando el Pipeline de Despliegue (CI/CD)..."
+    # Para el propósito de esta demostración, este echo es suficiente.
+    # Si quisieras disparar el otro workflow, usarías:
+    # gh workflow run ci-cd.yml -f message='Nuevo modelo entrenado'
+  env:
+    GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

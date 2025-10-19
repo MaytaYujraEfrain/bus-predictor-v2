@@ -1,0 +1,21 @@
+ - name: Configurar Python 3.10
+    uses: actions/setup-python@v4
+    with:
+      python-version: '3.10'
+
+  - name: Instalar dependencias
+    run: pip install -r requirements.txt
+
+  - name: Ejecutar Pruebas Unitarias (pytest)
+    # Asume que tienes un test_api.py en la carpeta tests/
+    run: |
+      pip install pytest
+      pytest tests/test_api.py
+      
+  # 2. Construir y Empaquetar la Imagen Docker (CD)
+  # Nota: En un entorno real, aquí se haría login y se subiría al registro (Docker Hub, etc.)
+  - name: Construir imagen Docker
+    run: docker build -t mta-bus-predictor:${{ github.sha }} .
+
+  - name: Simular Despliegue en Producción
+    run: echo "::notice::La imagen mta-bus-predictor ha sido construida y está lista para ser desplegada en Kubernetes/ECS con el tag ${{ github.sha }}"
