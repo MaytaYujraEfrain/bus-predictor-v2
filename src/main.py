@@ -26,8 +26,8 @@ app.add_middleware(
 
 # --- 2. Carga del Modelo y Preprocesador ---
 # Verifica que los archivos existan antes de cargarlos
-MODEL_PATH = 'lgbm_model.pkl' # Asegúrate de que el nombre del archivo sea correcto
-PREPROCESSOR_PATH = 'preprocessor.pkl' # Asegúrate de que el nombre del archivo sea correcto
+MODEL_PATH = 'models/lgbm_model.pkl' # Asegúrate de que el nombre del archivo sea correcto
+PREPROCESSOR_PATH = 'models/preprocessor.pkl' # Asegúrate de que el nombre del archivo sea correcto
 
 try:
     # Intenta cargar el modelo entrenado
