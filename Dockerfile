@@ -22,9 +22,9 @@ COPY models/ /app/models/
 
 # --- Exponer Puerto y Comando de Inicio ---
 
-# FastAPI usa el puerto 8000 por defecto, pero lo mapearemos al puerto 80 del contenedor
-EXPOSE 80
+# Mantener el puerto 8000 para consistencia con el entorno local
+EXPOSE 8000
 
 # Comando para ejecutar la API con Uvicorn
-# El alias de uvicorn por defecto es '8000', lo ajustamos a '80' para el contenedor
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "80"]
+# Usamos el puerto 8000 por defecto de Uvicorn
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
