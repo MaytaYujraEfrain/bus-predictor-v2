@@ -1,21 +1,21 @@
-# Importaciones necesarias para FastAPI, pydantic, pandas y el modelo
+import joblib
+import pandas as pd
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
-import pandas as pd
+from pydantic import BaseModel
 import numpy as np
-import pickle
 import os
 
-# --- Configuración de FastAPI ---
+# --- 1. Configuración de FastAPI ---
 app = FastAPI(
-    title="MTA Bus Delay Predictor API",
-    description="API para predecir el retraso de autobuses del MTA (Nueva York) usando LightGBM.",
-    version="1.0.1"
+    title="Predictor de Retrasos de Autobuses MTA",
+    description="API para estimar el tiempo de viaje adicional (retraso) utilizando un modelo LightGBM.",
+    version="1.0.0"
 )
 
-# Configuración de CORS para permitir peticiones desde cualquier origen (necesario para la UI local)
-origins = ["*"]
+# Configuración de CORS para permitir peticiones desde cualquier origen (necesario para el frontend local)
+origins = ["*"] # Deberías restringir esto a tu frontend URL en un entorno de producción
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -24,119 +24,80 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Rutas de Archivos para Docker ---
-# Rutas absolutas dentro del contenedor Docker
-BASE_DIR = "/app/models"
-MODEL_PATH = os.path.join(BASE_DIR, "lgbm_regressor.pkl")
-ENCODERS_PATH = os.path.join(BASE_DIR, "encoders.pkl")
+# --- 2. Carga del Modelo y Preprocesador ---
+# Verifica que los archivos existan antes de cargarlos
+MODEL_PATH = 'lgbm_model.pkl' # Asegúrate de que el nombre del archivo sea correcto
+PREPROCESSOR_PATH = 'preprocessor.pkl' # Asegúrate de que el nombre del archivo sea correcto
 
-# Variables globales para almacenar el modelo y los encoders
-model = None
-encoders = None
+try:
+    # Intenta cargar el modelo entrenado
+    lgbm_model = joblib.load(MODEL_PATH)
+    print(f"✅ Modelo LightGBM cargado desde {MODEL_PATH}")
+except FileNotFoundError:
+    print(f"❌ ERROR: El archivo del modelo no se encontró en {MODEL_PATH}")
+    # Usar un modelo dummy para que la API pueda iniciar (pero las predicciones serán falsas)
+    lgbm_model = None
+except Exception as e:
+    print(f"❌ ERROR al cargar el modelo: {e}")
+    lgbm_model = None
 
-# --- Función de Carga de Artefactos ---
-def load_artifacts():
-    global model, encoders
-    try:
-        # Cargar el modelo LightGBM
-        with open(MODEL_PATH, 'rb') as f:
-            model = pickle.load(f)
+try:
+    # Intenta cargar el ColumnTransformer usado para codificar datos
+    preprocessor = joblib.load(PREPROCESSOR_PATH)
+    print(f"✅ Preprocesador cargado desde {PREPROCESSOR_PATH}")
+except FileNotFoundError:
+    print(f"❌ ERROR: El archivo del preprocesador no se encontró en {PREPROCESSOR_PATH}")
+    preprocessor = None
+except Exception as e:
+    print(f"❌ ERROR al cargar el preprocesador: {e}")
+    preprocessor = None
 
-        # Cargar los encoders (LabelEncoders para variables categóricas)
-        with open(ENCODERS_PATH, 'rb') as f:
-            encoders = pickle.load(f)
-        
-        # Este mensaje NO APARECIÓ en los logs anteriores, lo cual indica el fallo.
-        print("✅ Modelo y Encoders cargados con éxito.")
 
-    except FileNotFoundError as e:
-        print(f"❌ Error al cargar artefactos: No se encontró el archivo {e.filename}. Verifique la ruta en Dockerfile.")
-        # Se lanza una excepción para que el servidor falle si los modelos no cargan
-        raise RuntimeError(f"Fallo al cargar archivos: {e}")
-    except Exception as e:
-        print(f"❌ Error inesperado durante la carga de artefactos: {e}")
-        raise RuntimeError(f"Error inesperado: {e}")
-
-# Ejecutar la carga al inicio de la aplicación
-load_artifacts()
-
-# --- Esquema de Solicitud (Input) ---
-# Definición de la estructura de datos que espera el modelo
+# --- 3. Definición del Esquema de Entrada (Pydantic) ---
+# Este esquema DEBE coincidir con los datos que envía el frontend corregido
 class PredictionRequest(BaseModel):
-    # Usamos Field para añadir validaciones y ejemplos útiles para la documentación de la API
-    Day_of_Week: str = Field(..., example="Monday", description="Día de la semana de la predicción.")
-    Time_of_Day: int = Field(..., example=8, description="Hora del día (0-23).")
-    Route: str = Field(..., example="B1", description="Ruta del autobús (e.g., B1, B6, B44).")
-    Direction: str = Field(..., example="NORTH", description="Dirección del viaje (NORTH, SOUTH, EAST, WEST).")
-    
-    model_config = {
-        "json_schema_extra": {
-            "examples": [
-                {
-                    "Day_of_Week": "Monday",
-                    "Time_of_Day": 8,
-                    "Route": "B44",
-                    "Direction": "NORTH"
-                }
-            ]
-        }
-    }
+    Day_of_Week: str
+    Time_of_Day: int # 0-23
+    Route: str
+    Direction: str # 'NORTH', 'SOUTH', 'EAST', 'WEST'
 
-# --- Endpoint Raíz (Verificación de salud) ---
-@app.get("/", summary="Verificación de estado de la API")
-def read_root():
-    if model is None or encoders is None:
-        raise HTTPException(status_code=503, detail="Modelo no cargado. El servicio está temporalmente inactivo.")
-    # Respuesta modificada para coincidir con la solicitud del usuario
-    return {"status": "ok", "message": "API de Predicción de Buses MTA operativa."}
-
-# --- Endpoint de Predicción ---
+# --- 4. Endpoint de Predicción ---
 @app.post("/predict", summary="Realiza una predicción de retraso de autobús (minutos)")
 def predict_delay(request: PredictionRequest):
-    # 1. Preparar los datos de entrada en un DataFrame
-    data = request.model_dump()
-    df = pd.DataFrame([data])
-    
-    # 2. Preprocesamiento (codificación de variables categóricas)
-    
-    # Las características numéricas (Time_of_Day) se usan directamente.
-    
-    # Codificar variables categóricas
+    """
+    Toma los parámetros de la ruta y predice el tiempo de viaje adicional (retraso).
+    """
+    if lgbm_model is None or preprocessor is None:
+        raise HTTPException(status_code=500, detail="El modelo o el preprocesador no se han cargado correctamente en el servidor.")
+
     try:
-        df['Day_of_Week'] = encoders['Day_of_Week'].transform(df['Day_of_Week'])
-        df['Route'] = encoders['Route'].transform(df['Route'])
-        df['Direction'] = encoders['Direction'].transform(df['Direction'])
-
-        # La columna Time_of_Day ya es numérica, por lo que se mantiene.
+        # Convertir la solicitud Pydantic a un DataFrame de pandas
+        input_data = pd.DataFrame([request.dict()])
         
-    except ValueError as e:
-        # Esto ocurre si se envía una categoría que el modelo no conoce
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Error de codificación: una o más categorías de entrada no son válidas. Detalle: {e}"
-        )
+        # El preprocesador solo debe aplicarse a las columnas esperadas
+        # Asegúrate de que los nombres de las columnas coincidan exactamente con las usadas en el entrenamiento
+        input_data = input_data[['Day_of_Week', 'Time_of_Day', 'Route', 'Direction']]
+
+        # Aplicar el transformador de columnas
+        processed_data = preprocessor.transform(input_data)
+        
+        # Realizar la predicción
+        prediction = lgbm_model.predict(processed_data)[0]
+        
+        # Asegurarse de que el retraso predicho no sea negativo (aunque LightGBM lo maneja bien)
+        predicted_delay = max(0, prediction)
+
+        # La clave de respuesta debe ser 'predicted_delay_minutes' para que el frontend funcione
+        return {"predicted_delay_minutes": float(predicted_delay)}
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error interno durante la preparación de la predicción: {e}")
+        # Esto captura errores durante el procesamiento o la predicción
+        print(f"Error durante la predicción: {e}")
+        raise HTTPException(status_code=500, detail=f"Error interno del servidor durante la predicción. Detalle: {e}")
 
-    # 3. Ordenar las columnas para que coincidan con el orden de entrenamiento del modelo (CRÍTICO)
-    # Se asume que el orden de las features es el mismo que cuando se entrenó el modelo:
-    features = ['Day_of_Week', 'Time_of_Day', 'Route', 'Direction']
-    df_processed = df[features]
-    
-    # 4. Realizar la predicción
-    try:
-        prediction = model.predict(df_processed)[0]
-        
-        # Asegurarse de que el retraso no sea negativo
-        predicted_delay = max(0, float(prediction))
-        
-        # 5. Devolver el resultado
-        return {
-            "predicted_delay_minutes": round(predicted_delay, 2),
-            "Day_of_Week": data['Day_of_Week'],
-            "Time_of_Day": data['Time_of_Day']
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error durante la predicción con el modelo: {e}")
-
-# --- Fin del Archivo ---
+# --- 5. Endpoint de Verificación (Opcional, pero recomendado) ---
+@app.get("/")
+def read_root():
+    return {"message": "API de Predicción de Retrasos MTA está funcionando.",
+            "status": "OK",
+            "predict_endpoint": "/predict (POST)"}
