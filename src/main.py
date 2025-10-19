@@ -1,20 +1,21 @@
 import joblib
 import pandas as pd
+import numpy as np
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import numpy as np
-import os
+from typing import Optional
 
-# --- 1. Configuración de FastAPI ---
+# --- 1. Inicialización de la Aplicación ---
 app = FastAPI(
-    title="Predictor de Retrasos de Autobuses MTA",
-    description="API para estimar el tiempo de viaje adicional (retraso) utilizando un modelo LightGBM.",
+    title="MTA Bus Predictor API",
+    description="Predice el retraso del bus en minutos utilizando un modelo LightGBM.",
     version="1.0.0"
 )
 
-# Configuración de CORS para permitir peticiones desde cualquier origen (necesario para el frontend local)
-origins = ["*"] # Deberías restringir esto a tu frontend URL en un entorno de producción
+# Configuración de CORS para permitir solicitudes desde tu frontend (o cualquier origen)
+# Se asume que el frontend corre localmente o desde cualquier host
+origins = ["*"] # Esto permite cualquier origen, lo cual es útil para desarrollo
 
 app.add_middleware(
     CORSMiddleware,
@@ -25,75 +26,71 @@ app.add_middleware(
 )
 
 # --- 2. Carga del Modelo y Preprocesador ---
-# Verifica que los archivos existan antes de cargarlos
-MODEL_PATH = 'models/lgbm_model.pkl' # Asegúrate de que el nombre del archivo sea correcto
-PREPROCESSOR_PATH = 'models/preprocessor.pkl' # Asegúrate de que el nombre del archivo sea correcto
+# Rutas corregidas para apuntar a la carpeta models/ dentro del contenedor
+MODEL_PATH = 'models/lgbm_model.pkl' 
+PREPROCESSOR_PATH = 'models/preprocessor.pkl' 
 
 try:
     # Intenta cargar el modelo entrenado
-    lgbm_model = joblib.load(MODEL_PATH)
-    print(f"✅ Modelo LightGBM cargado desde {MODEL_PATH}")
-except FileNotFoundError:
-    print(f"❌ ERROR: El archivo del modelo no se encontró en {MODEL_PATH}")
-    # Usar un modelo dummy para que la API pueda iniciar (pero las predicciones serán falsas)
-    lgbm_model = None
-except Exception as e:
-    print(f"❌ ERROR al cargar el modelo: {e}")
-    lgbm_model = None
-
-try:
-    # Intenta cargar el ColumnTransformer usado para codificar datos
+    model = joblib.load(MODEL_PATH)
+    # Intenta cargar el transformador de columnas (preprocessor)
     preprocessor = joblib.load(PREPROCESSOR_PATH)
-    print(f"✅ Preprocesador cargado desde {PREPROCESSOR_PATH}")
-except FileNotFoundError:
-    print(f"❌ ERROR: El archivo del preprocesador no se encontró en {PREPROCESSOR_PATH}")
-    preprocessor = None
+    model_status = "OK"
 except Exception as e:
-    print(f"❌ ERROR al cargar el preprocesador: {e}")
+    model = None
     preprocessor = None
+    model_status = f"ERROR: No se pudo cargar el modelo o preprocesador. {e}"
 
+# --- 3. Esquema de Datos (Schema) ---
+class PredictionData(BaseModel):
+    # Los nombres de los campos DEBEN coincidir con los que espera el modelo (y tu frontend)
+    route_id: str
+    day_of_week: str
+    hour: int # De 0 a 23
+    distance_travelled_meters: float
 
-# --- 3. Definición del Esquema de Entrada (Pydantic) ---
-# Este esquema DEBE coincidir con los datos que envía el frontend corregido
-class PredictionRequest(BaseModel):
-    Day_of_Week: str
-    Time_of_Day: int # 0-23
-    Route: str
-    Direction: str # 'NORTH', 'SOUTH', 'EAST', 'WEST'
+# --- 4. Endpoints de la API ---
 
-# --- 4. Endpoint de Predicción ---
-@app.post("/predict", summary="Realiza una predicción de retraso de autobús (minutos)")
-def predict_delay(request: PredictionRequest):
+@app.get("/")
+async def read_root():
+    """Endpoint raíz para verificar el estado de la API."""
+    return {
+        "message": "API de Predicción de Retrasos MTA está funcionando.",
+        "status": "OK",
+        "model_load_status": model_status,
+        "predict_endpoint": "/predict (POST)"
+    }
+
+@app.post("/predict")
+async def predict_delay(data: PredictionData):
     """
-    Toma los parámetros de la ruta y predice el tiempo de viaje adicional (retraso).
+    Realiza la predicción del retraso del bus en minutos.
+    Acepta datos en formato JSON y devuelve el retraso predicho.
     """
-    if lgbm_model is None or preprocessor is None:
-        raise HTTPException(status_code=500, detail="El modelo o el preprocesador no se han cargado correctamente en el servidor.")
+    if model_status.startswith("ERROR"):
+        raise HTTPException(status_code=503, detail=model_status)
 
     try:
-        # Convertir la solicitud Pydantic a un DataFrame de pandas
-        input_data = pd.DataFrame([request.dict()])
-        
-        # El preprocesador solo debe aplicarse a las columnas esperadas
-        # Asegúrate de que los nombres de las columnas coincidan exactamente con las usadas en el entrenamiento
-        input_data = input_data[['Day_of_Week', 'Time_of_Day', 'Route', 'Direction']]
+        # Convertir los datos de entrada a un DataFrame
+        input_data = pd.DataFrame([data.model_dump()])
 
-        # Aplicar el transformador de columnas
+        # Aplicar el preprocesador (incluye codificación one-hot, etc.)
         processed_data = preprocessor.transform(input_data)
         
         # Realizar la predicción
-        prediction = lgbm_model.predict(processed_data)[0]
-        
-        # Asegurarse de que el retraso predicho no sea negativo (aunque LightGBM lo maneja bien)
+        prediction = model.predict(processed_data)[0]
+
+        # Asegurar que el retraso predicho no es negativo
         predicted_delay = max(0, prediction)
 
-        # La clave de respuesta debe ser 'predicted_delay_minutes' para que el frontend funcione
-        return {"predicted_delay_minutes": float(predicted_delay)}
+        # Devolver el resultado en el formato JSON que espera el frontend
+        return {
+            "predicted_delay_minutes": float(predicted_delay)
+        }
 
     except Exception as e:
-        # Esto captura errores durante el procesamiento o la predicción
-        print(f"Error durante la predicción: {e}")
-        raise HTTPException(status_code=500, detail=f"Error interno del servidor durante la predicción. Detalle: {e}")
+        # Esto captura errores durante la predicción, como problemas con el transformador.
+        raise HTTPException(status_code=500, detail=f"Error durante la predicción: {str(e)}")
 
 # --- 5. Endpoint de Verificación (Opcional, pero recomendado) ---
 @app.get("/")
